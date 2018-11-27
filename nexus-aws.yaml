@@ -1,0 +1,12 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: False
+  vars:
+    ec2_type_ami: t2.small
+    ec2_base_ami: ami-00035f41c82244dab
+    ec2_ssh_key_name: user-uploaded-ssh
+  roles:
+    - nexus-ami
+    - openvpn-ami
+    - nexus-cf

@@ -1,0 +1,38 @@
+---
+- name: add ssh key to AWS
+  ec2_key:
+    name: "{{ ec2_ssh_key_name }}"
+    key_material: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+  register: ssh_key
+- name: provision EC2 instance which will be converted to AMI
+  ec2:
+    key_name: "{{ ssh_key.key.name }}"
+    instance_type: "{{ ec2_type_ami }}"
+    image: "{{ ec2_base_ami }}"
+    user_data: "{{lookup('file', 'install_nexus.sh') }}"
+    wait: yes
+  register: ec2
+- name: wait for OpenSSH server up
+  wait_for:
+    port: 22
+    host: '{{ ec2.instances.0.public_ip }}'
+    search_regex: OpenSSH
+    delay: 10
+- name: wait for systemd service file for Nexus
+  command: ssh -o StrictHostKeyChecking=no ubuntu@{{ ec2.instances.0.public_ip }} while true; do if [ -f /etc/systemd/system/nexus.service ]; then break; fi; done
+- name: stop ec2 instance
+  ec2:
+    instance_ids: "{{ ec2.instance_ids.0 }}"
+    state: stopped
+    wait: yes
+- name: create AMI based on ec2 instance with Nexus
+  ec2_ami:
+    instance_id: "{{ ec2.instance_ids.0 }}"
+    wait: yes
+    name: nexus-test
+  register: nexus_ami
+- name: terminate ec2 instance
+  ec2:
+    instance_ids: "{{ ec2.instance_ids.0 }}"
+    state: absent
+    wait: no

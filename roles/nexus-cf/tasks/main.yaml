@@ -1,0 +1,16 @@
+---
+- name: create CF stack
+  cloudformation:
+    stack_name: "nexus-test"
+    state: "present"
+    disable_rollback: true
+    template: "roles/nexus-cf/files/nexus-cf-stack.yaml"
+    template_parameters:
+      NexusAmiId: "{{ nexus_ami.image_id }}"
+      OpenVPNAmiId: "{{ openvpn_ami.image_id }}"
+      SSHKeyName: "{{ ec2_ssh_key_name }}"
+  register: cf
+- name: create config for vpn client
+  template:
+    src: client.ovpn.j2
+    dest: client.ovpn

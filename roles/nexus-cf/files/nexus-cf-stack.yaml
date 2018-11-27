@@ -1,0 +1,219 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Template to start Nexus with full environment
+Parameters:
+  NexusAmiId:
+    Description: 'Nexus AMI ID.'
+    Type: String
+  OpenVPNAmiId:
+    Description: 'OpenVPN AMI ID.'
+    Type: String
+  SSHKeyName:
+    Description: 'Name of uploaded SSH key.'
+    Type: String
+Resources:
+  # Network definition
+  NexusVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      InstanceTenancy: default
+  PublicNetwork:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NexusVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+          Ref: 'AWS::Region'
+      MapPublicIpOnLaunch: 'true'
+  InternalNetworkOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NexusVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+          Ref: 'AWS::Region'
+  InternalNetworkTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref NexusVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select
+        - 2
+        - !GetAZs
+          Ref: 'AWS::Region'
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref NexusVPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NexusVPC
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref NexusVPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicNetwork
+      RouteTableId: !Ref PublicRouteTable
+  PrivateSubnetRouteTableAssociationOne:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref InternalNetworkOne
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnetRouteTableAssociationTwo:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref InternalNetworkTwo
+      RouteTableId: !Ref PrivateRouteTable
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGateway:
+    DependsOn: InternetGatewayAttachment
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt 'EIP.AllocationId'
+      SubnetId: !Ref PublicNetwork
+  PrivateRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGateway
+
+# Add other network stuff as well as SG for EC2 instances
+  NexusInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow connections only on Nexus port
+      VpcId: !Ref NexusVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 8081
+        ToPort: 8081
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+  OpenVPNInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow connections by SSH and VPN
+      VpcId: !Ref NexusVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 1194
+        ToPort: 1194
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+
+  # Shared file system definition
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access EFS only from SG for Nexus instances
+      VpcId: !Ref NexusVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 2049
+        ToPort: 2049
+        SourceSecurityGroupId: !Ref NexusInstanceSecurityGroup
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+  NexusEFS:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+  MountTargetNetworkOne:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref NexusEFS
+      SubnetId: !Ref InternalNetworkOne
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+  MountTargetNetworkTwo:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref NexusEFS
+      SubnetId: !Ref InternalNetworkTwo
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # Nexus HA infra
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref NexusAmiId
+      InstanceType: t2.small
+      KeyName: !Ref SSHKeyName
+      SecurityGroups:
+        - !Ref NexusInstanceSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          mount -t nfs4 -o nfsvers=4.1 ${NexusEFS}.efs.${AWS::Region}.amazonaws.com:/ /opt/sonatype-work
+          chown nexus:nexus /opt/sonatype-work
+          echo "${NexusEFS}.efs.${AWS::Region}.amazonaws.com:/ /opt/sonatype-work nfs4 defaults,_netdev 0 0" >> /etc/fstab
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+    - MountTargetNetworkOne
+    - InternetGatewayAttachment
+    Properties:
+      VPCZoneIdentifier:
+      - Ref: InternalNetworkOne
+      - Ref: InternalNetworkTwo
+      LaunchConfigurationName:
+        Ref: LaunchConfiguration
+      MinSize: '1'
+      MaxSize: '1'
+
+  # OpenVPN server
+  OpenVPNInstance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !Ref OpenVPNAmiId
+      InstanceType: t2.micro
+      KeyName: !Ref SSHKeyName
+      SecurityGroupIds:
+        - !Ref OpenVPNInstanceSecurityGroup
+      SubnetId: !Ref PublicNetwork
+
+Outputs:
+  PublicOpenVPNDNSName:
+    Description: The DNSName of the OpenVPN server
+    Value: !GetAtt OpenVPNInstance.PublicDnsName

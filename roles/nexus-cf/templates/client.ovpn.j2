@@ -1,0 +1,11 @@
+client
+remote {{ cf.stack_outputs.PublicOpenVPNDNSName }} 1194
+ca ca.crt
+auth-user-pass
+comp-lzo yes
+dev tun
+proto tcp
+persist-key
+persist-tun
+user nobody
+group nogroup
